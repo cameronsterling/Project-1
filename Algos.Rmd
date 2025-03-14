@@ -4,6 +4,7 @@ author: "Cameron Sterling"
 date: "`r Sys.Date()`"
 output: pdf_document
 ---
+Here, you can find the algorithms that I used and my cross validation process 
 
 ```{r setup, include=FALSE}
 library(tidyverse)
