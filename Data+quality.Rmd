@@ -4,6 +4,7 @@ author: "Cameron Sterling"
 date: "`r Sys.Date()`"
 output: pdf_document
 ---
+Here, you can find the code necessary to prepare the data and do some basic quality checks. 
 
 ```{r setup, include=FALSE}
 library(tidyverse)
