@@ -1,0 +1,306 @@
+---
+title: "Data Preparation and Feature Engineering"
+author: "Cameron Sterling"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readr)
+library(jsonlite)
+library(caret)
+library(randomForest)
+library(tidycensus)
+library(sf)
+library(xgboost)
+library(httr)
+library(VIM)
+library(FNN)
+library(DMwR2)
+
+```
+
+
+
+# Loading the Data
+## ACS Loading and Feature Engineering
+```{r}
+library(tidycensus)
+library(tidyverse)
+
+ny_metro_fips <- c(
+  "36005", "36047", "36061", "36081", "36085", 
+  "36059", "36103", "36119", "36087", 
+  "34003", "34013", "34017", "34023", "34025", "34027", "34029", "34031", "34035", "34039" 
+)
+
+
+rent_burden_ny <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_renters = "B25070_001E",
+    rent_burden_30_34 = "B25070_007E",
+    rent_burden_35_39 = "B25070_008E", 
+    rent_burden_40_49 = "B25070_009E", 
+    rent_burden_50_plus = "B25070_010E"
+  ),
+  state = "36",
+  county = c("005", "047", "061", "081", "085", 
+  "059", "103", "119", "087"), 
+  year = 2022,  
+  survey = "acs5",
+  output = "wide"
+)
+
+rent_burden_nj <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_renters = "B25070_001E",
+    rent_burden_30_34 = "B25070_007E",
+    rent_burden_35_39 = "B25070_008E", 
+    rent_burden_40_49 = "B25070_009E", 
+    rent_burden_50_plus = "B25070_010E"
+  ),
+  state = "34",
+  county = c( "003", "013", "017", "023", "025", "027", "029", "34031", "035", "039"),  
+  year = 2022,  
+  survey = "acs5",
+  output = "wide"
+)
+
+rent_burden_df <- bind_rows(rent_burden_ny, rent_burden_nj)
+
+income_ny <- get_acs(
+  geography = "tract",
+  variables = c(median_income = "B19013_001E"),
+  state = c("36"),
+  county = c(
+  "005", "047", "061", "081", "085", 
+  "059", "103", "119", "087"
+),
+  year = 2022,
+  survey = "acs5",
+  output = "wide"
+)
+
+income_nj <- get_acs(
+  geography = "tract",
+  variables = c(median_income = "B19013_001E"),
+  state = c("34"),
+  county = c(
+  "003", "013", "017", "023", "025", "027", "029", "031", "035", "039" 
+),
+  year = 2022,
+  survey = "acs5",
+  output = "wide"
+)
+
+income <- bind_rows(income_ny, income_nj)
+
+
+tenure_ny <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_hh = "B25003_001E", 
+    owner_hh = "B25003_002E",
+    renter_hh = "B25003_003E"
+  ),
+  state = c("36"),
+  county = c(
+  "005", "047", "061", "081", "085", 
+  "059", "103", "119", "087"
+),
+  year = 2022,
+  survey = "acs5",
+  output = "wide"
+)
+
+
+tenure_nj <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_hh = "B25003_001E", 
+    owner_hh = "B25003_002E",
+    renter_hh = "B25003_003E"
+  ),
+  state = c("34"),
+  county = c(
+  "003", "013", "017", "023", "025", "027", "029", "031", "035", "039" 
+),
+  year = 2022,
+  survey = "acs5",
+  output = "wide"
+)
+tenure <- bind_rows(tenure_ny, tenure_nj)
+
+acs_data <- rent_burden_df %>%
+  left_join(income, by = c("GEOID", "NAME")) %>%
+  left_join(tenure, by = c("GEOID", "NAME"))
+
+acs_data <- acs_data %>%
+  mutate(
+
+    rent_burden_30_plus = ifelse(renter_hh > 0, 
+                                 (rent_burden_30_34 + rent_burden_35_39 + rent_burden_40_49 + rent_burden_50_plus) / renter_hh * 100, 
+                                 NA),
+    
+    severe_rent_burden_50_plus = ifelse(renter_hh > 0, 
+                                        rent_burden_50_plus / renter_hh * 100, 
+                                        NA),
+    
+    percent_renters = ifelse(total_hh > 0, 
+                             renter_hh / total_hh * 100, 
+                             NA)
+  ) %>%
+  select(GEOID, NAME, median_income, percent_renters, rent_burden_30_plus, severe_rent_burden_50_plus)
+
+acs_data <- acs_data %>%
+  rename(
+    percent_rent_burdened = rent_burden_30_plus,
+    percent_severely_burdened = severe_rent_burden_50_plus
+  )
+
+```
+
+## SVI Data
+You can download this data on the CDC's website: https://www.atsdr.cdc.gov/place-health/php/svi/index.html#:~:text=Social%20vulnerability%20refers%20to%20the,and%20other%20community%2Dlevel%20stressors. 
+```{r}
+svi_ny <- read_csv("SVI_NJ_2.csv")
+svi_nj <- read_csv("SVI_NY.csv")
+
+svi_data <- bind_rows(svi_ny, svi_nj)
+svi_selected <- svi_data %>%
+  select(
+    GEOID = FIPS,  
+    total_population = E_TOTPOP,
+    total_housing_units = E_HU,
+    total_households = E_HH,
+    percent_poverty_150 = EP_POV150,  
+    percent_unemployed = EP_UNEMP,  
+    percent_multiunit = EP_MUNIT,
+    percent_mobile = EP_MOBILE,
+    percent_no_hs_diploma = EP_NOHSDP,  
+    percent_uninsured = EP_UNINSUR,  
+    percent_seniors = EP_AGE65,  
+    percent_youth = EP_AGE17,  
+    percent_disability = EP_DISABL,  
+    percent_single_parent = EP_SNGPNT,  
+    percent_minority = EP_MINRTY,  
+    percent_black = EP_AFAM,  
+    percent_hispanic = EP_HISP,  
+    percent_asian = EP_ASIAN,  
+    percent_native = EP_AIAN,  
+    percent_pacific_islander = EP_NHPI,  
+    percent_two_or_more_races = EP_TWOMORE,  
+    percent_limited_english = EP_LIMENG,  
+    percent_large_apartments = EP_MUNIT,  
+    percent_overcrowded = EP_CROWD,  
+    percent_no_vehicle = EP_NOVEH,  
+    percent_group_quarters = EP_GROUPQ,  
+    percent_no_internet = EP_NOINT,  
+    daytime_population_change = E_DAYPOP  
+  )
+```
+```{r}
+svi_selected$GEOID <- as.character(svi_selected$GEOID)
+
+acs_data <- acs_data %>%
+  left_join(svi_selected, by = "GEOID")
+
+
+```
+## EJI (CDC)
+You can find this data on the CDC's website (for now): https://www.atsdr.cdc.gov/place-health/php/eji/eji-data-download.html
+```{r}
+eji_ny <- read.csv("EJI_2022_New_York.csv")
+eji_nj <- read.csv("EJI_2022_New_Jersey.csv")
+eji_data <- bind_rows(eji_ny, eji_nj)
+
+eji_filtered <- eji_data %>%
+  select(
+    GEOID, 
+    air_pollution_pm25 = E_PM,  
+    air_pollution_ozone = E_OZONE,  
+    diesel_exposure = E_DSLPM,  
+    cancer_risk = EP_CANCER,  
+    green_space = E_PARK,
+    ozone_percentile = E_OZONE,  
+    lead_exposure = E_HOUAGE,
+    toxic_exposure = E_TRI,
+    polluted_water = E_IMPWTR
+  
+  )
+eji_filtered$GEOID <- as.character(eji_filtered$GEOID)
+merged_data <- acs_data %>%
+  left_join(eji_filtered, by = "GEOID")
+
+
+```
+
+# Basic Quality Checks
+## Checking for NA Values and Removing Poorly Reported Rows 
+
+```{r}
+dim(merged_data)
+sum(is.na(merged_data$percent_rent_burdened))
+sum(is.na(merged_data$lead_exposure))
+na_threshold <- ncol(merged_data) * 0.3
+merged_data[merged_data == -999.0] <- NA
+
+merged_clean <- merged_data[rowSums(is.na(merged_data)) <= na_threshold, ]
+
+dim(merged_clean)
+
+```
+
+## Looking at the Distribution of the Outcome
+```{r}
+summary(merged_data$percent_rent_burdened)
+summary(merged_data$percent_severely_burdened)
+
+
+sum(merged_data$percent_rent_burdened < 0, na.rm = TRUE)
+
+sum(merged_data$E_TOTPOP < 0, na.rm = TRUE)
+
+ggplot(merged_data, aes(y = percent_severely_burdened)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.6) +
+  labs(title = "Distribution of Rent Burden (%)", y = "Rent Burden (%)") +
+  theme_minimal()
+```
+
+## Seeing Distribution of Outcome Geographically (Do I have any holes?)
+```{r}
+library(tigris)
+merged_data_final <- numeric_data
+heatmap_data <- merged_data_final %>%
+  select(GEOID, percent_rent_burdened, percent_severely_burdened) %>%
+  na.omit()
+tracts_ny <- tracts(state = "NY", county = c("005", "047", "061", "081", "085", "059", "103", "119", "087"), year = 2022)
+tracts_nj <- tracts(state = "NJ", county = c("003", "013", "017", "023", "025", "027", "029", "031", "035", "039"), year = 2022)
+
+tracts <- rbind(tracts_ny, tracts_nj)
+map_data <- left_join(tracts, heatmap_data, by = "GEOID")
+
+ggplot(data = map_data) +
+  geom_sf(aes(fill = percent_rent_burdened), color = NA) + 
+  scale_fill_viridis_c(option = "plasma", name = "% Rent Burdened") 
+  labs(
+    title = "Rent Burden Across Census Tracts in NY & NJ",
+    subtitle = "Percentage of Renters Paying >30% of Income on Rent",
+  ) +
+  theme_minimal()
+  
+ggplot(data = map_data) +
+  geom_sf(aes(fill = percent_severely_burdened), color = NA) + 
+  scale_fill_viridis_c(option = "plasma", name = "% Severly Rent Burdened") 
+  labs(
+    title = "Rent Burden Across Census Tracts in NY & NJ",
+    subtitle = "Percentage of Renters Paying >50% of Income on Rent",
+  ) +
+  theme_minimal()
+```
+
+
+```
