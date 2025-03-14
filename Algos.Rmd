@@ -1,0 +1,193 @@
+---
+title: "Applying Algorithms and Cross Validation"
+author: "Cameron Sterling"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readr)
+library(jsonlite)
+library(caret)
+library(randomForest)
+library(tidycensus)
+library(sf)
+library(xgboost)
+library(httr)
+library(VIM)
+library(FNN)
+library(DMwR2)
+```
+
+
+
+# Linear Regression
+```{r}
+dumb_model_data <- merged_data_final %>%
+  select_if(is.numeric) %>%  
+  na.omit()  %>%
+  select(-percent_severely_burdened)
+
+dumb_regression <- lm(percent_rent_burdened ~ . , data = dumb_model_data)
+summary(dumb_regression)
+
+```
+
+
+# Random Forest
+## Basic Model
+```{r}
+library(randomForest)
+library(dplyr)
+
+model_data <- merged_data_final %>%
+  select_if(is.numeric) %>%
+  na.omit() %>%
+  select(-percent_severely_burdened)
+
+set.seed(123)  
+train_index <- sample(nrow(model_data), size = 0.8 * nrow(model_data))
+
+train_data <- model_data[train_index, ]
+test_data  <- model_data[-train_index, ]
+
+rf_model <- randomForest(
+  percent_rent_burdened ~ .,  
+  data = train_data,
+  ntree = 500,
+  importance = TRUE
+)
+
+print(rf_model)
+
+```
+
+## Cross Validation
+```{r}
+library(caret)
+
+predictions <- predict(rf_model, newdata = test_data)
+
+r2 <- cor(predictions, test_data$percent_rent_burdened)^2
+rmse <- sqrt(mean((predictions - test_data$percent_rent_burdened)^2))
+
+cat("Random Forest R²:", r2, "\n")
+cat("Random Forest RMSE:", rmse, "\n")
+
+cv_control <- trainControl(method = "cv", number = 5)
+
+
+rf_cv_model <- train(
+  percent_rent_burdened ~ ., 
+  data = train_data,
+  method = "rf",
+  trControl = cv_control,  
+  ntree = 500
+)
+
+print(rf_cv_model)
+``` 
+
+## Visualizing Feature Importance
+```{r}
+library(ggplot2)
+library(dplyr)
+
+importance_values <- importance(rf_model)
+importance_df <- as.data.frame(importance_values, row.names = rownames(importance_values))
+importance_df$Feature <- rownames(importance_df)
+
+top_features <- importance_df %>%
+  arrange(desc(IncNodePurity)) %>%
+  head(12)
+
+ggplot(top_features, aes(x = reorder(Feature, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity", fill = "#0072B2", width = 0.7) + 
+  coord_flip() +
+  labs(
+    title = "Top 10 Most Important Features in Predicting Rent Burden",
+    x = "Predictors",
+    y = "Importance"
+  ) +
+  theme_minimal(base_size = 12) +  # Increase font size
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size = 10)
+  )
+```
+
+## Creating an Improved Vizualization with Feature Improtance 
+```{r}
+
+correlations <- cor(train_data, use = "complete.obs")[, "percent_rent_burdened"]
+cor_df <- data.frame(Feature = names(correlations), Correlation = correlations)
+
+top_features_with_dir <- top_features %>%
+  left_join(cor_df, by = "Feature")
+
+ggplot(top_features_with_dir, aes(x = reorder(Feature, IncNodePurity), y = IncNodePurity, fill = Correlation > 0)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_manual(values = c("red", "blue"), labels = c("Negative", "Positive")) +
+  coord_flip() +
+  labs(
+    title = "Top 12 Most Important Features in Predicting Rent Burden",
+    x = "Predictors",
+    y = "Importance (IncNodePurity)",
+    fill = "Correlation Direction"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text = element_text(size = 12)
+  )
+
+```
+
+# Comparison -- RF and Linear Baseline
+```{r}
+lm_model <- lm(percent_rent_burdened ~ ., data = train_data)
+
+
+rf_predictions <- predict(rf_model, newdata = test_data)
+lm_predictions <- predict(lm_model, newdata = test_data)
+
+rf_r2 <- cor(rf_predictions, test_data$percent_rent_burdened)^2
+lm_r2 <- cor(lm_predictions, test_data$percent_rent_burdened)^2
+
+rf_rmse <- sqrt(mean((rf_predictions - test_data$percent_rent_burdened)^2))
+lm_rmse <- sqrt(mean((lm_predictions - test_data$percent_rent_burdened)^2))
+
+cat("Random Forest R²:", rf_r2, "\n")
+cat("Random Forest RMSE:", rf_rmse, "\n\n")
+
+cat("Linear Regression R²:", lm_r2, "\n")
+cat("Linear Regression RMSE:", lm_rmse, "\n")
+
+```
+
+# Residual Analysis
+```{r}
+rf_residuals <- test_data$percent_rent_burdened - rf_predictions
+lm_residuals <- test_data$percent_rent_burdened - lm_predictions
+
+residuals_df <- data.frame(
+  Model = rep(c("Random Forest", "Linear Regression"), each = length(rf_residuals)),
+  Fitted = c(rf_predictions, lm_predictions),
+  Residuals = c(rf_residuals, lm_residuals)
+)
+
+ggplot(residuals_df, aes(x = Residuals, fill = Model)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  scale_fill_manual(values = c("steelblue", "darkred")) +
+  labs(
+    title = "Residual Distribution: Random Forest vs. Linear Regression",
+    x = "Residual Value",
+    y = "Frequency"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+
+
+```
