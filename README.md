@@ -4,3 +4,5 @@ This project explores the drivers of rent burden in the New York Metropolitan ar
 "Why does rent burden vary across different neighborhoods, and what demographic, environmental, and economic factors explain these differences?"
 
 You can find the data ingestion / cleaning process in the file "Data+quality.RMD" and the code for algorithms, cross validation, and visualization in "Algos.RMD"
+
+Find my report at the file called "Using Machine Learning to Understand the Prevalence of Rent Burdened Neighborhoods in NY Metropolitan Area"
